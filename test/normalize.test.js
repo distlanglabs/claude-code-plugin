@@ -18,7 +18,7 @@ test("normalizes Claude Code session start into an ingest session", () => {
   assert.equal(result.payload.session.id, "ses_1");
   assert.equal(result.payload.session.started_at, "2026-05-15T10:00:00.000Z");
   assert.deepEqual(result.payload.interactions, []);
-  assert.equal(result.flush, false);
+  assert.equal(result.flush, true);
 });
 
 test("normalizes user prompts with stable interaction ids and missing token usage", () => {
@@ -99,9 +99,9 @@ test("normalizes failed tool and stop events", () => {
 
 test("normalizes stop and session end", () => {
   let result = normalizeClaudeHookEvent({ hook_event_name: "SessionStart", session_id: "ses_end", cwd: "/tmp/proj", timestamp: "2026-05-15T10:00:00Z" });
-  assert.equal(result.flush, false);
+  assert.equal(result.flush, true);
   result = normalizeClaudeHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "ses_end", prompt_id: "prompt-end", prompt: "Finish", timestamp: "2026-05-15T10:00:01Z" }, result.state);
-  assert.equal(result.flush, false);
+  assert.equal(result.flush, true);
   result = normalizeClaudeHookEvent({ hook_event_name: "Stop", session_id: "ses_end", timestamp: "2026-05-15T10:00:03Z" }, result.state);
   assert.equal(result.flush, true);
   assert.equal(result.payload.interactions[0].status, "success");
@@ -113,20 +113,21 @@ test("normalizes stop and session end", () => {
   assert.equal(result.payload.session.ended_at, "2026-05-15T10:00:10.000Z");
 });
 
-test("only flushes on Stop, StopFailure, and SessionEnd", () => {
+test("every hook event flushes immediately so the dashboard sees live progress", () => {
   const cases = [
-    { name: "SessionStart", flush: false },
-    { name: "UserPromptSubmit", flush: false },
-    { name: "PreToolUse", flush: false },
-    { name: "PostToolUse", flush: false },
-    { name: "PostToolUseFailure", flush: false },
-    { name: "Stop", flush: true },
-    { name: "StopFailure", flush: true },
-    { name: "SessionEnd", flush: true },
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
   ];
-  for (const { name, flush } of cases) {
+  for (const name of cases) {
     const result = normalizeClaudeHookEvent({ hook_event_name: name, session_id: "ses_x", timestamp: "2026-05-15T10:00:00Z" });
-    assert.equal(result.flush, flush, `${name} flush flag`);
+    assert.equal(result.flush, true, `${name} flush flag`);
+    assert.ok(result.payload, `${name} produced a payload`);
   }
 });
 

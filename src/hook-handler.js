@@ -48,12 +48,6 @@ export async function main() {
 
   const preliminary = normalizeClaudeHookEvent(event, previousState);
   const stateForPersist = preliminary.state;
-  if (!preliminary.flush) {
-    await writeState(stateForPersist).catch((error) => log("warn", "Failed to persist Claude Code hook state", { error: String(error) }));
-    await log("debug", "Buffered Claude Code hook event without upload", { event: preliminary.event });
-    return;
-  }
-
   const transcriptPath = configuredValue(event?.transcript_path, transcriptPathFromState(stateForPersist, preliminary.event.session_id));
   let transcriptData = null;
   try {

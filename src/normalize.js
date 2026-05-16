@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 const source = "claude-code";
-const FLUSH_EVENTS = new Set(["Stop", "StopFailure", "SessionEnd"]);
 
 export function normalizeClaudeHookEvent(event, previousState = {}, transcript = null) {
   const input = event && typeof event === "object" ? event : {};
@@ -16,7 +15,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcript =
   const transcriptData = readTranscriptInput(transcript);
   const stats = transcriptData.stats;
   const calls = transcriptData.calls;
-  const flush = FLUSH_EVENTS.has(hookEventName);
+  const flush = true;
 
   const result = {
     state,

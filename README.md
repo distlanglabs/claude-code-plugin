@@ -63,11 +63,13 @@ The integration configures these Claude Code hooks:
 - `StopFailure`
 - `SessionEnd`
 
-Hook events are normalized to Distlang Agent Debugger `session`, `interaction`, and `step` records and uploaded to:
+Hook events are normalized to Distlang Agent Debugger `session`, `interaction`, and `step` records and uploaded **on every hook event** (not buffered) to:
 
 ```text
 POST https://api.distlang.com/agent-debugger/v1/ingest
 ```
+
+The local state file at `~/.config/claude/distlang-plugin.json` is the source of truth for in-flight sessions; each hook event refreshes it and then immediately pushes the full session+interactions+steps payload upstream, so the dashboard shows live progress as the session runs. `Stop`, `StopFailure`, and `SessionEnd` hooks have a 60s timeout to absorb large-transcript parses; all other hooks have a 15s timeout.
 
 ## Token Accounting
 
@@ -131,12 +133,12 @@ npm run publish:public
 4. Create and push the release tag:
 
 ```bash
-git tag -a v0.3.0 -m "v0.3.0"
-git push origin v0.3.0
+git tag -a v0.5.0 -m "v0.5.0"
+git push origin v0.5.0
 ```
 
 5. Optional GitHub release:
 
 ```bash
-gh release create v0.3.0 --title "v0.3.0"
+gh release create v0.5.0 --title "v0.5.0"
 ```
