@@ -26,6 +26,7 @@
   "scripts": {
     "test": "node --check src/hook-handler.js && node --check src/normalize.js && node --check src/distlang.js && node --check src/state.js && node --check src/status.js && node --check bin/distlang-claude-code-hook.js && node --check bin/distlang-claude-code-status.js && node --test test/*.test.js",
     "check": "npm test",
+    "release": "npm test && npm pack --dry-run",
     "publish:public": "npm publish --access public"
   },
   "keywords": [
