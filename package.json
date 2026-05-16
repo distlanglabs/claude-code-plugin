@@ -1,6 +1,6 @@
 {
   "name": "@distlang/claude-code-plugin",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Claude Code hooks for Distlang Agent Debugger",
   "type": "module",
   "main": "./src/hook-handler.js",
