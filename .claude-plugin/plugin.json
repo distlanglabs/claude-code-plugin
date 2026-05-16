@@ -1,0 +1,13 @@
+{
+  "name": "distlang-agent-debugger",
+  "version": "0.1.0",
+  "description": "Capture Claude Code hook events in Distlang Agent Debugger",
+  "author": {
+    "name": "Distlang Labs"
+  },
+  "homepage": "https://distlang.com/docs/agent-debugger/usage/",
+  "repository": "https://github.com/distlanglabs/claude-code-plugin",
+  "license": "MIT",
+  "keywords": ["distlang", "agent-debugger", "claude-code"],
+  "hooks": "./hooks/hooks.json"
+}

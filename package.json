@@ -1,0 +1,49 @@
+{
+  "name": "@distlang/claude-code-plugin",
+  "version": "0.1.0",
+  "description": "Claude Code hooks for Distlang Agent Debugger",
+  "type": "module",
+  "main": "./src/hook-handler.js",
+  "exports": {
+    ".": {
+      "default": "./src/hook-handler.js"
+    },
+    "./normalize": {
+      "default": "./src/normalize.js"
+    }
+  },
+  "bin": {
+    "distlang-claude-code-hook": "./bin/distlang-claude-code-hook.js",
+    "distlang-claude-code-status": "./bin/distlang-claude-code-status.js"
+  },
+  "files": [
+    ".claude-plugin",
+    "bin",
+    "hooks",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --check src/hook-handler.js && node --check src/normalize.js && node --check src/distlang.js && node --check src/state.js && node --check src/status.js && node --check bin/distlang-claude-code-hook.js && node --check bin/distlang-claude-code-status.js && node --test test/*.test.js",
+    "check": "npm test",
+    "publish:public": "npm publish --access public"
+  },
+  "keywords": [
+    "distlang",
+    "claude-code",
+    "hooks",
+    "agent-debugger"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/distlanglabs/claude-code-plugin.git"
+  },
+  "homepage": "https://github.com/distlanglabs/claude-code-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/distlanglabs/claude-code-plugin/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
