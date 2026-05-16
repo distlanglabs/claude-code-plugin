@@ -59,10 +59,13 @@ export function extractLLMCalls(records) {
   const seenMessageIds = new Set();
   let promptIndex = -1;
   let lastPromptId = "";
+  let lastUserRecordTimestampMs = 0;
 
   for (const record of records) {
     if (!record || typeof record !== "object") continue;
     if (record.type === "user") {
+      const ts = Date.parse(typeof record.timestamp === "string" ? record.timestamp : "");
+      if (Number.isFinite(ts)) lastUserRecordTimestampMs = ts;
       const promptId = configuredValue(record.promptId, "");
       if (promptId && promptId !== lastPromptId) {
         lastPromptId = promptId;
@@ -80,11 +83,18 @@ export function extractLLMCalls(records) {
     const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
     if (!usage) continue;
 
+    const startedAt = configuredValue(record.timestamp, "");
+    const startedAtMs = Date.parse(startedAt);
+    const latencyMs = lastUserRecordTimestampMs > 0 && Number.isFinite(startedAtMs)
+      ? Math.max(0, startedAtMs - lastUserRecordTimestampMs)
+      : 0;
+
     calls.push({
       message_id: messageId,
       prompt_index: Math.max(0, promptIndex),
       model: configuredValue(message.model, ""),
-      started_at: configuredValue(record.timestamp, ""),
+      started_at: startedAt,
+      latency_ms: latencyMs,
       input_tokens: numberOrZero(usage.input_tokens),
       output_tokens: numberOrZero(usage.output_tokens),
       cached_tokens: numberOrZero(usage.cache_read_input_tokens),

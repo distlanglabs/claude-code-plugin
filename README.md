@@ -89,6 +89,12 @@ On flush events (`Stop`, `StopFailure`, `SessionEnd`) the plugin parses the Clau
 
 If the transcript is unreadable at flush time, the plugin uploads with token totals at zero rather than estimating.
 
+## Cost and Latency
+
+Each `llm_call` step is tagged with `provider: "anthropic"` and a normalized model key (`claude-opus-4-7` → `opus-4.7`) so the server-side pricing table resolves. The plugin also computes `cost_usd`, `estimated_cost_usd`, and `reported_cost_usd` directly from a vendored pricing table (`pricing_version` is pinned in `src/normalize.js`); session `total_cost_usd` is the sum across `llm_call` steps. Update the pricing table when Anthropic prices change.
+
+`first_token_at` / `first_token_latency_ms` on `llm_call` steps are an approximation: the gap from the most recent preceding `user` / `tool_result` transcript record to the assistant record. Claude Code's transcript doesn't log first-token timing, so this overstates true first-token latency (it includes the full streaming duration of that response). Useful for trend-spotting, not for SLOs. `payload_json.latency_quality` on the step is set to `request_to_response_proxy` to flag this.
+
 ## Debugging
 
 Useful overrides:
@@ -133,12 +139,12 @@ npm run publish:public
 4. Create and push the release tag:
 
 ```bash
-git tag -a v0.5.0 -m "v0.5.0"
-git push origin v0.5.0
+git tag -a v0.6.0 -m "v0.6.0"
+git push origin v0.6.0
 ```
 
 5. Optional GitHub release:
 
 ```bash
-gh release create v0.5.0 --title "v0.5.0"
+gh release create v0.6.0 --title "v0.6.0"
 ```

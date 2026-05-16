@@ -270,14 +270,51 @@ test("normalizeClaudeHookEvent emits llm_call steps and per-interaction tokens f
   const llmSteps = interaction.steps.filter((step) => step.kind === "llm_call");
   assert.equal(llmSteps.length, 2);
   assert.equal(llmSteps[0].id, "ses_calls:int:p1:step:llm:msg_a");
-  assert.equal(llmSteps[0].model, "claude-opus-4-7");
+  assert.equal(llmSteps[0].model, "opus-4.7");
+  assert.equal(llmSteps[0].provider, "anthropic");
   assert.equal(llmSteps[0].input_tokens, 5);
   assert.equal(llmSteps[0].context_size_tokens, 5 + 60 + 30);
+  assert.ok(llmSteps[0].cost_usd > 0, "llm_call step has nonzero cost");
+  assert.equal(llmSteps[0].estimation_source, "claude_transcript_plugin_pricing");
   assert.equal(llmSteps[1].id, "ses_calls:int:p1:step:llm:msg_b");
 
   assert.equal(result.payload.session.input_tokens, 12);
   assert.equal(result.payload.session.output_tokens, 34);
   assert.equal(result.payload.session.llm_call_count, 2);
-  assert.deepEqual(result.payload.session.models_used, ["claude-opus-4-7"]);
+  assert.deepEqual(result.payload.session.models_used, ["opus-4.7"]);
   assert.equal(result.payload.session.token_usage_source, "claude_transcript");
+  assert.ok(result.payload.session.total_cost_usd > 0, "session has nonzero cost");
+});
+
+test("estimates Anthropic cost using opus-4.7 pricing", () => {
+  let result = normalizeClaudeHookEvent({ hook_event_name: "SessionStart", session_id: "ses_cost", cwd: "/tmp/proj", timestamp: "2026-05-15T10:00:00Z" });
+  result = normalizeClaudeHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "ses_cost", prompt_id: "p1", prompt: "hi", timestamp: "2026-05-15T10:00:01Z" }, result.state);
+  result = normalizeClaudeHookEvent(
+    { hook_event_name: "Stop", session_id: "ses_cost", timestamp: "2026-05-15T10:00:05Z" },
+    result.state,
+    {
+      stats: { available: true, input_tokens: 0, output_tokens: 0, cached_tokens: 0, cache_creation_tokens: 0, reasoning_tokens: 0, llm_call_count: 0, models_used: [] },
+      calls: [
+        {
+          message_id: "msg_cost",
+          prompt_index: 0,
+          model: "claude-opus-4-7",
+          started_at: "2026-05-15T10:00:03Z",
+          latency_ms: 2000,
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cached_tokens: 1_000_000,
+          cache_creation_tokens: 0,
+          reasoning_tokens: 0,
+        },
+      ],
+    },
+  );
+  const step = result.payload.interactions[0].steps[0];
+  // uncached_input = max(0, 1M - 1M) = 0, cached 1M * $0.5 + output 1M * $25 = $25.5
+  assert.equal(step.cost_usd, 25.5);
+  assert.equal(step.first_token_latency_ms, 2000);
+  assert.equal(step.first_token_at, "2026-05-15T10:00:03.000Z");
+  assert.equal(result.payload.interactions[0].cost_usd, 25.5);
+  assert.equal(result.payload.session.total_cost_usd, 25.5);
 });

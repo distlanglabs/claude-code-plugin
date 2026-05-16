@@ -2,6 +2,33 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 const source = "claude-code";
+const anthropicPricingVersion = "2026-05-08";
+const anthropicPricing = {
+  "opus-4.7": { input: 5, cachedInput: 0.5, output: 25 },
+  "opus-4.6": { input: 5, cachedInput: 0.5, output: 25 },
+  "opus-4.5": { input: 5, cachedInput: 0.5, output: 25 },
+  "sonnet-4.6": { input: 3, cachedInput: 0.3, output: 15 },
+  "sonnet-4.5": { input: 3, cachedInput: 0.3, output: 15 },
+  "haiku-4.5": { input: 1, cachedInput: 0.1, output: 5 },
+};
+
+function pricingKeyForAnthropicModel(rawModel) {
+  const lower = configuredValue(rawModel, "").toLowerCase();
+  if (!lower) return "";
+  return lower.replace(/^claude-/, "").replace(/-(\d+)-(\d+)$/, "-$1.$2");
+}
+
+function estimateAnthropicCostUsd(call) {
+  const pricing = anthropicPricing[pricingKeyForAnthropicModel(call.model)];
+  if (!pricing) return 0;
+  const uncachedInput = Math.max(0, call.input_tokens - call.cached_tokens);
+  return (
+    (uncachedInput / 1_000_000) * pricing.input +
+    (call.cached_tokens / 1_000_000) * pricing.cachedInput +
+    (call.cache_creation_tokens / 1_000_000) * pricing.input +
+    ((call.output_tokens + call.reasoning_tokens) / 1_000_000) * pricing.output
+  );
+}
 
 export function normalizeClaudeHookEvent(event, previousState = {}, transcript = null) {
   const input = event && typeof event === "object" ? event : {};
@@ -225,7 +252,7 @@ function buildPayload(session, now, stats = null, calls = []) {
       duration_ms: durationMs(session.started_at, endedAt),
       status: session.status === "error" ? "error" : session.status === "success" ? "success" : "running",
       summary: sessionSummary(session, interactions),
-      total_cost_usd: 0,
+      total_cost_usd: interactions.reduce((sum, item) => sum + (Number(item.cost_usd) || 0), 0),
       input_tokens: sessionTotals.input_tokens,
       output_tokens: sessionTotals.output_tokens,
       reasoning_tokens: sessionTotals.reasoning_tokens,
@@ -263,7 +290,7 @@ function buildInteraction(interaction, now, llmCalls = [], fallbackSessionStats 
     status: interaction.status === "error" ? "error" : interaction.status === "running" ? "running" : "success",
     summary: configuredValue(sanitizeText(interaction.summary), summarize(interaction.prompt, `Interaction ${interaction.index || 1}`)),
     llm_call_count: useFallback ? fallback.llm_call_count : interactionTotals.llm_call_count,
-    cost_usd: 0,
+    cost_usd: useFallback ? 0 : interactionTotals.cost_usd,
     input_tokens: useFallback ? fallback.input_tokens : interactionTotals.input_tokens,
     output_tokens: useFallback ? fallback.output_tokens : interactionTotals.output_tokens,
     reasoning_tokens: useFallback ? fallback.reasoning_tokens : interactionTotals.reasoning_tokens,
@@ -280,6 +307,8 @@ function buildInteraction(interaction, now, llmCalls = [], fallbackSessionStats 
 function buildLLMStep(call, interactionID, fallbackIndex) {
   const startedAt = normalizeDateTime(call.started_at, new Date().toISOString());
   const contextSize = call.input_tokens + call.cached_tokens + call.cache_creation_tokens;
+  const pricingModel = pricingKeyForAnthropicModel(call.model);
+  const costUsd = estimateAnthropicCostUsd(call);
   return {
     id: `${interactionID}:step:llm:${safeID(call.message_id)}`,
     index: Math.max(1, Number(fallbackIndex) || 1),
@@ -290,20 +319,28 @@ function buildLLMStep(call, interactionID, fallbackIndex) {
     ended_at: startedAt,
     duration_ms: 0,
     status: "completed",
-    provider: null,
-    model: call.model || null,
+    provider: "anthropic",
+    model: pricingModel || call.model || null,
     tool_name: null,
     input_tokens: call.input_tokens,
     output_tokens: call.output_tokens,
     reasoning_tokens: call.reasoning_tokens,
     cached_tokens: call.cached_tokens,
     context_size_tokens: contextSize,
-    cost_usd: 0,
+    cost_usd: costUsd,
+    estimated_cost_usd: costUsd,
+    reported_cost_usd: costUsd,
+    estimation_source: "claude_transcript_plugin_pricing",
+    pricing_version: anthropicPricingVersion,
+    first_token_at: startedAt,
+    first_token_latency_ms: Math.max(0, Number(call.latency_ms) || 0),
     payload_json: {
       source: "claude_transcript",
       message_id: call.message_id,
       cache_creation_input_tokens: call.cache_creation_tokens,
       token_usage: { quality: "exact", source: "claude_transcript" },
+      latency_quality: "request_to_response_proxy",
+      raw_model: call.model || null,
     },
     details: [],
   };
@@ -329,6 +366,7 @@ function sanitizeLLMCalls(calls) {
       prompt_index: Math.max(0, Number(entry.prompt_index) || 0),
       model: configuredValue(entry.model, ""),
       started_at: configuredValue(entry.started_at, ""),
+      latency_ms: Math.max(0, Number(entry.latency_ms) || 0),
       input_tokens: nonNegativeNumber(entry.input_tokens),
       output_tokens: nonNegativeNumber(entry.output_tokens),
       cached_tokens: nonNegativeNumber(entry.cached_tokens),
@@ -351,13 +389,14 @@ function groupCallsByInteraction(calls, interactionCount) {
 }
 
 function totalsFromLLMCalls(calls) {
-  const totals = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_creation_tokens: 0, llm_call_count: 0 };
+  const totals = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_creation_tokens: 0, llm_call_count: 0, cost_usd: 0 };
   for (const call of calls) {
     totals.input_tokens += call.input_tokens;
     totals.output_tokens += call.output_tokens;
     totals.reasoning_tokens += call.reasoning_tokens;
     totals.cached_tokens += call.cached_tokens;
     totals.cache_creation_tokens += call.cache_creation_tokens;
+    totals.cost_usd += estimateAnthropicCostUsd(call);
     totals.llm_call_count += 1;
   }
   return totals;
@@ -366,7 +405,10 @@ function totalsFromLLMCalls(calls) {
 function sessionTotalsFromInteractions(interactions, fallbackStats, calls) {
   if (calls.length > 0) {
     const models = new Set();
-    for (const call of calls) if (call.model) models.add(call.model);
+    for (const call of calls) {
+      const normalized = pricingKeyForAnthropicModel(call.model) || configuredValue(call.model, "");
+      if (normalized) models.add(normalized);
+    }
     return {
       available: true,
       input_tokens: interactions.reduce((sum, item) => sum + item.input_tokens, 0),
