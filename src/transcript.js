@@ -17,6 +17,10 @@ function numberOrZero(value) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function configuredValue(value, fallback = "") {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : fallback;
+}
+
 export function aggregateTranscriptRecords(records) {
   const stats = emptyStats();
   const seenMessageIds = new Set();
@@ -50,13 +54,56 @@ export function aggregateTranscriptRecords(records) {
   return stats;
 }
 
+export function extractLLMCalls(records) {
+  const calls = [];
+  const seenMessageIds = new Set();
+  let promptIndex = -1;
+  let lastPromptId = "";
+
+  for (const record of records) {
+    if (!record || typeof record !== "object") continue;
+    if (record.type === "user") {
+      const promptId = configuredValue(record.promptId, "");
+      if (promptId && promptId !== lastPromptId) {
+        lastPromptId = promptId;
+        promptIndex += 1;
+      }
+      continue;
+    }
+    if (record.type !== "assistant") continue;
+    const message = record.message;
+    if (!message || typeof message !== "object") continue;
+    const messageId = typeof message.id === "string" ? message.id : "";
+    if (!messageId) continue;
+    if (seenMessageIds.has(messageId)) continue;
+    seenMessageIds.add(messageId);
+    const usage = message.usage && typeof message.usage === "object" ? message.usage : null;
+    if (!usage) continue;
+
+    calls.push({
+      message_id: messageId,
+      prompt_index: Math.max(0, promptIndex),
+      model: configuredValue(message.model, ""),
+      started_at: configuredValue(record.timestamp, ""),
+      input_tokens: numberOrZero(usage.input_tokens),
+      output_tokens: numberOrZero(usage.output_tokens),
+      cached_tokens: numberOrZero(usage.cache_read_input_tokens),
+      cache_creation_tokens: numberOrZero(usage.cache_creation_input_tokens),
+      reasoning_tokens: numberOrZero(usage.reasoning_tokens),
+    });
+  }
+  return calls;
+}
+
 export async function parseTranscript(filePath) {
-  if (typeof filePath !== "string" || filePath.trim() === "") return emptyStats();
+  if (typeof filePath !== "string" || filePath.trim() === "") {
+    return { stats: emptyStats(), calls: [] };
+  }
   let raw = "";
   try {
     raw = await fs.readFile(filePath, "utf8");
   } catch {
-    return emptyStats();
+    return { stats: emptyStats(), calls: [] };
   }
   const records = [];
   for (const line of raw.split(/\r?\n/)) {
@@ -67,5 +114,8 @@ export async function parseTranscript(filePath) {
       // Skip malformed lines; transcripts can be truncated mid-write.
     }
   }
-  return aggregateTranscriptRecords(records);
+  return {
+    stats: aggregateTranscriptRecords(records),
+    calls: extractLLMCalls(records),
+  };
 }

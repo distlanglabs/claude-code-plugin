@@ -55,14 +55,14 @@ export async function main() {
   }
 
   const transcriptPath = configuredValue(event?.transcript_path, transcriptPathFromState(stateForPersist, preliminary.event.session_id));
-  let transcriptStats = null;
+  let transcriptData = null;
   try {
-    transcriptStats = await parseTranscript(transcriptPath);
+    transcriptData = await parseTranscript(transcriptPath);
   } catch (error) {
     await log("warn", "Failed to parse Claude Code transcript; flushing without enriched metrics", { error: String(error), transcriptPath });
   }
 
-  const normalized = normalizeClaudeHookEvent(event, previousState, transcriptStats);
+  const normalized = normalizeClaudeHookEvent(event, previousState, transcriptData);
   await writeState(normalized.state).catch((error) => log("warn", "Failed to persist Claude Code hook state", { error: String(error) }));
   if (!normalized.payload) return;
 
@@ -84,7 +84,7 @@ export async function main() {
       if (!response.ok) {
         await log("warn", "Agent Debugger upload returned non-ok response", { attempt, response });
       } else {
-        await log("debug", "Agent Debugger upload succeeded", { attempt, event: normalized.event, response, transcript_stats_available: transcriptStats?.available === true });
+        await log("debug", "Agent Debugger upload succeeded", { attempt, event: normalized.event, response, transcript_stats_available: transcriptData?.stats?.available === true, llm_call_count: Array.isArray(transcriptData?.calls) ? transcriptData.calls.length : 0 });
       }
       return;
     } catch (error) {

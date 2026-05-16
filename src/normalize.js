@@ -4,7 +4,7 @@ import { basename } from "node:path";
 const source = "claude-code";
 const FLUSH_EVENTS = new Set(["Stop", "StopFailure", "SessionEnd"]);
 
-export function normalizeClaudeHookEvent(event, previousState = {}, transcriptStats = null) {
+export function normalizeClaudeHookEvent(event, previousState = {}, transcript = null) {
   const input = event && typeof event === "object" ? event : {};
   const hookEventName = configuredValue(input.hook_event_name, configuredValue(input.hookEventName, "unknown"));
   const timestamp = normalizeDateTime(input.timestamp, new Date().toISOString());
@@ -13,7 +13,9 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
   const project = projectName(cwd);
   const state = normalizeState(previousState);
   const session = ensureSessionState(state, sessionID, timestamp, cwd, project, input.transcript_path);
-  const stats = sanitizeTranscriptStats(transcriptStats);
+  const transcriptData = readTranscriptInput(transcript);
+  const stats = transcriptData.stats;
+  const calls = transcriptData.calls;
   const flush = FLUSH_EVENTS.has(hookEventName);
 
   const result = {
@@ -29,7 +31,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
     session.cwd = cwd;
     session.project = project;
     session.transcript_path = configuredValue(input.transcript_path, session.transcript_path);
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -42,7 +44,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
     interaction.status = "running";
     interaction.hook_event_name = hookEventName;
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -61,7 +63,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
       tool_input: safeJSONValue(input.tool_input),
     });
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -84,7 +86,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
     interaction.status = failed ? "error" : interaction.status === "running" ? "success" : interaction.status;
     interaction.ended_at = timestamp;
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -95,7 +97,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
     interaction.ended_at = timestamp;
     interaction.summary = summarize(interaction.prompt, `Interaction ${interaction.index}`);
     session.status = failed ? "error" : "running";
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -108,7 +110,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}, transcriptSt
         interaction.ended_at = timestamp;
       }
     }
-    result.payload = buildPayload(session, timestamp, stats);
+    result.payload = buildPayload(session, timestamp, stats, calls);
     return result;
   }
 
@@ -202,13 +204,18 @@ function ensureStepState(interaction, stepID, timestamp, toolName) {
   return step;
 }
 
-function buildPayload(session, now, stats = null) {
+function buildPayload(session, now, stats = null, calls = []) {
   const aggregated = sanitizeTranscriptStats(stats);
-  const interactions = session.interactions.map((interaction, index, all) =>
-    buildInteraction(interaction, now, index === all.length - 1 ? aggregated : null),
-  );
+  const sanitizedCalls = sanitizeLLMCalls(calls);
+  const callsByInteraction = groupCallsByInteraction(sanitizedCalls, session.interactions.length);
+  const interactions = session.interactions.map((interaction, index, all) => {
+    const interactionCalls = callsByInteraction.get(index) ?? [];
+    const fallback = sanitizedCalls.length === 0 && index === all.length - 1 ? aggregated : null;
+    return buildInteraction(interaction, now, interactionCalls, fallback);
+  });
   const allSteps = interactions.flatMap((interaction) => interaction.steps);
   const endedAt = session.ended_at || now;
+  const sessionTotals = sessionTotalsFromInteractions(interactions, aggregated, sanitizedCalls);
   return {
     source,
     project: session.project || projectName(session.cwd),
@@ -220,28 +227,32 @@ function buildPayload(session, now, stats = null) {
       status: session.status === "error" ? "error" : session.status === "success" ? "success" : "running",
       summary: sessionSummary(session, interactions),
       total_cost_usd: 0,
-      input_tokens: aggregated.input_tokens,
-      output_tokens: aggregated.output_tokens,
-      reasoning_tokens: aggregated.reasoning_tokens,
-      cached_tokens: aggregated.cached_tokens,
-      cache_creation_tokens: aggregated.cache_creation_tokens,
-      llm_call_count: aggregated.llm_call_count,
+      input_tokens: sessionTotals.input_tokens,
+      output_tokens: sessionTotals.output_tokens,
+      reasoning_tokens: sessionTotals.reasoning_tokens,
+      cached_tokens: sessionTotals.cached_tokens,
+      cache_creation_tokens: sessionTotals.cache_creation_tokens,
+      llm_call_count: sessionTotals.llm_call_count,
       context_size_tokens_p50: 0,
       context_size_tokens_p95: 0,
       context_size_tokens_max: 0,
-      models_used: aggregated.models_used,
+      models_used: sessionTotals.models_used,
       files_changed_count: fileEditCount(allSteps),
       retry_count: 0,
-      token_usage_source: aggregated.available ? "claude_transcript" : "missing",
+      token_usage_source: sessionTotals.available ? "claude_transcript" : "missing",
     },
     interactions,
   };
 }
 
-function buildInteraction(interaction, now, sessionStats = null) {
+function buildInteraction(interaction, now, llmCalls = [], fallbackSessionStats = null) {
   const endedAt = interaction.ended_at || now;
-  const steps = interaction.steps.map((step) => buildStep(step));
-  const stats = sanitizeTranscriptStats(sessionStats);
+  const toolSteps = interaction.steps.map((step) => buildStep(step));
+  const llmSteps = llmCalls.map((call, index) => buildLLMStep(call, interaction.id, toolSteps.length + index + 1));
+  const steps = orderStepsByTime([...toolSteps, ...llmSteps]);
+  const interactionTotals = totalsFromLLMCalls(llmCalls);
+  const fallback = sanitizeTranscriptStats(fallbackSessionStats);
+  const useFallback = llmCalls.length === 0 && fallback.available;
   return {
     id: interaction.id,
     index: Math.max(1, Number(interaction.index) || 1),
@@ -252,19 +263,143 @@ function buildInteraction(interaction, now, sessionStats = null) {
     duration_ms: durationMs(interaction.started_at, endedAt),
     status: interaction.status === "error" ? "error" : interaction.status === "running" ? "running" : "success",
     summary: configuredValue(sanitizeText(interaction.summary), summarize(interaction.prompt, `Interaction ${interaction.index || 1}`)),
-    llm_call_count: stats.llm_call_count,
+    llm_call_count: useFallback ? fallback.llm_call_count : interactionTotals.llm_call_count,
     cost_usd: 0,
-    input_tokens: stats.input_tokens,
-    output_tokens: stats.output_tokens,
-    reasoning_tokens: stats.reasoning_tokens,
-    cached_tokens: stats.cached_tokens,
-    cache_creation_tokens: stats.cache_creation_tokens,
+    input_tokens: useFallback ? fallback.input_tokens : interactionTotals.input_tokens,
+    output_tokens: useFallback ? fallback.output_tokens : interactionTotals.output_tokens,
+    reasoning_tokens: useFallback ? fallback.reasoning_tokens : interactionTotals.reasoning_tokens,
+    cached_tokens: useFallback ? fallback.cached_tokens : interactionTotals.cached_tokens,
+    cache_creation_tokens: useFallback ? fallback.cache_creation_tokens : interactionTotals.cache_creation_tokens,
     context_size_tokens_p50: 0,
     context_size_tokens_p95: 0,
     context_size_tokens_max: 0,
     step_count: steps.length,
     steps,
   };
+}
+
+function buildLLMStep(call, interactionID, fallbackIndex) {
+  const startedAt = normalizeDateTime(call.started_at, new Date().toISOString());
+  const contextSize = call.input_tokens + call.cached_tokens + call.cache_creation_tokens;
+  return {
+    id: `${interactionID}:step:llm:${safeID(call.message_id)}`,
+    index: Math.max(1, Number(fallbackIndex) || 1),
+    kind: "llm_call",
+    phase: "build",
+    title: call.model ? `LLM ${call.model}` : "LLM call",
+    started_at: startedAt,
+    ended_at: startedAt,
+    duration_ms: 0,
+    status: "completed",
+    provider: null,
+    model: call.model || null,
+    tool_name: null,
+    input_tokens: call.input_tokens,
+    output_tokens: call.output_tokens,
+    reasoning_tokens: call.reasoning_tokens,
+    cached_tokens: call.cached_tokens,
+    context_size_tokens: contextSize,
+    cost_usd: 0,
+    payload_json: {
+      source: "claude_transcript",
+      message_id: call.message_id,
+      cache_creation_input_tokens: call.cache_creation_tokens,
+      token_usage: { quality: "exact", source: "claude_transcript" },
+    },
+    details: [],
+  };
+}
+
+function readTranscriptInput(value) {
+  if (!value || typeof value !== "object") return { stats: sanitizeTranscriptStats(null), calls: [] };
+  if (Array.isArray(value.calls) || value.stats) {
+    return { stats: sanitizeTranscriptStats(value.stats), calls: sanitizeLLMCalls(value.calls) };
+  }
+  return { stats: sanitizeTranscriptStats(value), calls: [] };
+}
+
+function sanitizeLLMCalls(calls) {
+  if (!Array.isArray(calls)) return [];
+  const sanitized = [];
+  for (const entry of calls) {
+    if (!entry || typeof entry !== "object") continue;
+    const messageId = configuredValue(entry.message_id, "");
+    if (!messageId) continue;
+    sanitized.push({
+      message_id: messageId,
+      prompt_index: Math.max(0, Number(entry.prompt_index) || 0),
+      model: configuredValue(entry.model, ""),
+      started_at: configuredValue(entry.started_at, ""),
+      input_tokens: nonNegativeNumber(entry.input_tokens),
+      output_tokens: nonNegativeNumber(entry.output_tokens),
+      cached_tokens: nonNegativeNumber(entry.cached_tokens),
+      cache_creation_tokens: nonNegativeNumber(entry.cache_creation_tokens),
+      reasoning_tokens: nonNegativeNumber(entry.reasoning_tokens),
+    });
+  }
+  return sanitized;
+}
+
+function groupCallsByInteraction(calls, interactionCount) {
+  const grouped = new Map();
+  if (interactionCount <= 0) return grouped;
+  for (const call of calls) {
+    const idx = Math.min(interactionCount - 1, Math.max(0, call.prompt_index));
+    if (!grouped.has(idx)) grouped.set(idx, []);
+    grouped.get(idx).push(call);
+  }
+  return grouped;
+}
+
+function totalsFromLLMCalls(calls) {
+  const totals = { input_tokens: 0, output_tokens: 0, reasoning_tokens: 0, cached_tokens: 0, cache_creation_tokens: 0, llm_call_count: 0 };
+  for (const call of calls) {
+    totals.input_tokens += call.input_tokens;
+    totals.output_tokens += call.output_tokens;
+    totals.reasoning_tokens += call.reasoning_tokens;
+    totals.cached_tokens += call.cached_tokens;
+    totals.cache_creation_tokens += call.cache_creation_tokens;
+    totals.llm_call_count += 1;
+  }
+  return totals;
+}
+
+function sessionTotalsFromInteractions(interactions, fallbackStats, calls) {
+  if (calls.length > 0) {
+    const models = new Set();
+    for (const call of calls) if (call.model) models.add(call.model);
+    return {
+      available: true,
+      input_tokens: interactions.reduce((sum, item) => sum + item.input_tokens, 0),
+      output_tokens: interactions.reduce((sum, item) => sum + item.output_tokens, 0),
+      reasoning_tokens: interactions.reduce((sum, item) => sum + item.reasoning_tokens, 0),
+      cached_tokens: interactions.reduce((sum, item) => sum + item.cached_tokens, 0),
+      cache_creation_tokens: interactions.reduce((sum, item) => sum + item.cache_creation_tokens, 0),
+      llm_call_count: interactions.reduce((sum, item) => sum + item.llm_call_count, 0),
+      models_used: Array.from(models),
+    };
+  }
+  return {
+    available: fallbackStats.available,
+    input_tokens: fallbackStats.input_tokens,
+    output_tokens: fallbackStats.output_tokens,
+    reasoning_tokens: fallbackStats.reasoning_tokens,
+    cached_tokens: fallbackStats.cached_tokens,
+    cache_creation_tokens: fallbackStats.cache_creation_tokens,
+    llm_call_count: fallbackStats.llm_call_count,
+    models_used: fallbackStats.models_used,
+  };
+}
+
+function orderStepsByTime(steps) {
+  const indexed = steps.map((step, position) => ({ step, position }));
+  indexed.sort((a, b) => {
+    const aTime = Date.parse(a.step.started_at);
+    const bTime = Date.parse(b.step.started_at);
+    if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return aTime - bTime;
+    return a.position - b.position;
+  });
+  return indexed.map(({ step }, index) => ({ ...step, index: index + 1 }));
 }
 
 function buildStep(step) {

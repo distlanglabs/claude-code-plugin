@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { normalizeClaudeHookEvent } from "../src/normalize.js";
-import { aggregateTranscriptRecords } from "../src/transcript.js";
+import { aggregateTranscriptRecords, extractLLMCalls } from "../src/transcript.js";
 
 test("normalizes Claude Code session start into an ingest session", () => {
   const result = normalizeClaudeHookEvent({
@@ -210,4 +210,73 @@ test("aggregateTranscriptRecords returns empty stats when no assistant usage pre
   assert.equal(stats.available, false);
   assert.equal(stats.input_tokens, 0);
   assert.deepEqual(stats.models_used, []);
+});
+
+test("extractLLMCalls assigns each assistant usage record to the surrounding user promptId", () => {
+  const calls = extractLLMCalls([
+    { type: "user", promptId: "p1", message: { role: "user" }, timestamp: "2026-05-15T10:00:00Z" },
+    {
+      type: "assistant",
+      timestamp: "2026-05-15T10:00:01Z",
+      message: { id: "msg_a", model: "claude-opus-4-7", usage: { input_tokens: 5, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 } },
+    },
+    { type: "user", promptId: "p1", message: { role: "user", content: [{ type: "tool_result" }] }, timestamp: "2026-05-15T10:00:02Z" },
+    {
+      type: "assistant",
+      timestamp: "2026-05-15T10:00:03Z",
+      message: { id: "msg_b", model: "claude-opus-4-7", usage: { input_tokens: 7, output_tokens: 2 } },
+    },
+    { type: "user", promptId: "p2", message: { role: "user" }, timestamp: "2026-05-15T10:00:10Z" },
+    {
+      type: "assistant",
+      timestamp: "2026-05-15T10:00:11Z",
+      message: { id: "msg_c", model: "claude-sonnet-4-6", usage: { input_tokens: 4, output_tokens: 6 } },
+    },
+  ]);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[0].prompt_index, 0);
+  assert.equal(calls[0].input_tokens, 5);
+  assert.equal(calls[0].cached_tokens, 20);
+  assert.equal(calls[0].cache_creation_tokens, 3);
+  assert.equal(calls[1].prompt_index, 0);
+  assert.equal(calls[2].prompt_index, 1);
+  assert.equal(calls[2].model, "claude-sonnet-4-6");
+});
+
+test("normalizeClaudeHookEvent emits llm_call steps and per-interaction tokens from transcript calls", () => {
+  let result = normalizeClaudeHookEvent({ hook_event_name: "SessionStart", session_id: "ses_calls", cwd: "/tmp/proj", timestamp: "2026-05-15T10:00:00Z" });
+  result = normalizeClaudeHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "ses_calls", prompt_id: "p1", prompt: "Hello", timestamp: "2026-05-15T10:00:01Z" }, result.state);
+  result = normalizeClaudeHookEvent(
+    { hook_event_name: "Stop", session_id: "ses_calls", timestamp: "2026-05-15T10:00:05Z" },
+    result.state,
+    {
+      stats: { available: true, input_tokens: 12, output_tokens: 34, cached_tokens: 100, cache_creation_tokens: 50, reasoning_tokens: 7, llm_call_count: 2, models_used: ["claude-opus-4-7"] },
+      calls: [
+        { message_id: "msg_a", prompt_index: 0, model: "claude-opus-4-7", started_at: "2026-05-15T10:00:02Z", input_tokens: 5, output_tokens: 24, cached_tokens: 60, cache_creation_tokens: 30, reasoning_tokens: 4 },
+        { message_id: "msg_b", prompt_index: 0, model: "claude-opus-4-7", started_at: "2026-05-15T10:00:04Z", input_tokens: 7, output_tokens: 10, cached_tokens: 40, cache_creation_tokens: 20, reasoning_tokens: 3 },
+      ],
+    },
+  );
+
+  const interaction = result.payload.interactions[0];
+  assert.equal(interaction.llm_call_count, 2);
+  assert.equal(interaction.input_tokens, 12);
+  assert.equal(interaction.output_tokens, 34);
+  assert.equal(interaction.cached_tokens, 100);
+  assert.equal(interaction.cache_creation_tokens, 50);
+  assert.equal(interaction.reasoning_tokens, 7);
+
+  const llmSteps = interaction.steps.filter((step) => step.kind === "llm_call");
+  assert.equal(llmSteps.length, 2);
+  assert.equal(llmSteps[0].id, "ses_calls:int:p1:step:llm:msg_a");
+  assert.equal(llmSteps[0].model, "claude-opus-4-7");
+  assert.equal(llmSteps[0].input_tokens, 5);
+  assert.equal(llmSteps[0].context_size_tokens, 5 + 60 + 30);
+  assert.equal(llmSteps[1].id, "ses_calls:int:p1:step:llm:msg_b");
+
+  assert.equal(result.payload.session.input_tokens, 12);
+  assert.equal(result.payload.session.output_tokens, 34);
+  assert.equal(result.payload.session.llm_call_count, 2);
+  assert.deepEqual(result.payload.session.models_used, ["claude-opus-4-7"]);
+  assert.equal(result.payload.session.token_usage_source, "claude_transcript");
 });

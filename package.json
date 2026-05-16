@@ -1,6 +1,6 @@
 {
   "name": "@distlang/claude-code-plugin",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Claude Code hooks for Distlang Agent Debugger",
   "type": "module",
   "main": "./src/hook-handler.js",
@@ -14,17 +14,19 @@
   },
   "bin": {
     "distlang-claude-code-hook": "./bin/distlang-claude-code-hook.js",
-    "distlang-claude-code-status": "./bin/distlang-claude-code-status.js"
+    "distlang-claude-code-status": "./bin/distlang-claude-code-status.js",
+    "distlang-claude-code-view": "./bin/distlang-claude-code-view.js"
   },
   "files": [
     ".claude-plugin",
     "bin",
+    "commands",
     "hooks",
     "src",
     "README.md"
   ],
   "scripts": {
-    "test": "node --check src/hook-handler.js && node --check src/normalize.js && node --check src/distlang.js && node --check src/state.js && node --check src/status.js && node --check bin/distlang-claude-code-hook.js && node --check bin/distlang-claude-code-status.js && node --test test/*.test.js",
+    "test": "node --check src/hook-handler.js && node --check src/normalize.js && node --check src/distlang.js && node --check src/state.js && node --check src/status.js && node --check src/view.js && node --check bin/distlang-claude-code-hook.js && node --check bin/distlang-claude-code-status.js && node --check bin/distlang-claude-code-view.js && node --test test/*.test.js",
     "check": "npm test",
     "release": "npm test && npm pack --dry-run",
     "publish:public": "npm publish --access public"

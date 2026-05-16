@@ -71,7 +71,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/distlang-claude-code-hook.js"],
-            "timeout": 5
+            "timeout": 60
           }
         ]
       }
@@ -83,7 +83,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/distlang-claude-code-hook.js"],
-            "timeout": 5
+            "timeout": 60
           }
         ]
       }
@@ -95,7 +95,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/bin/distlang-claude-code-hook.js"],
-            "timeout": 5
+            "timeout": 60
           }
         ]
       }

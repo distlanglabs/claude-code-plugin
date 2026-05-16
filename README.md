@@ -32,6 +32,13 @@ Disable uploads and sign out:
 ~/.cache/distlang/claude-code-plugin/package/node_modules/.bin/distlang-claude-code-status stop
 ```
 
+## Slash Commands
+
+Once the plugin is installed, two commands are available inside Claude Code:
+
+- `/distlang-login` — runs the Distlang OAuth login flow (delegates to `distlang helpers login`) and enables uploads.
+- `/distlang-view [session-id]` — opens the Agent Debugger dashboard for the current Claude Code session. With no argument, it resolves the session from `CLAUDE_SESSION_ID` or the most recent session in local state, and opens `https://dash.distlang.com/agent-debugger/sessions/<id>`. Override the base with `DISTLANG_DASHBOARD_URL`.
+
 ## Auth
 
 This package uses the same Distlang CLI-managed auth flow as the OpenCode plugin. It does not ask you to paste an API token into Claude Code config.
@@ -62,20 +69,23 @@ Hook events are normalized to Distlang Agent Debugger `session`, `interaction`, 
 POST https://api.distlang.com/agent-debugger/v1/ingest
 ```
 
-## Token Limitations
+## Token Accounting
 
-Claude Code hooks do not expose exact model token accounting in the MVP. The plugin does not fake token counts.
+On flush events (`Stop`, `StopFailure`, `SessionEnd`) the plugin parses the Claude Code session transcript at `transcript_path` and emits one `llm_call` step per assistant message that has a `usage` block. Each `llm_call` step carries `input_tokens`, `output_tokens`, `cached_tokens`, `cache_creation_input_tokens` (in `payload_json`), and `context_size_tokens = input + cached + cache_creation`, with `model` set from the transcript record. LLM calls are grouped to interactions by the user `promptId` they follow, so per-interaction tokens and session totals match what the model actually consumed.
 
-Each captured step includes this metadata in `payload_json.token_usage`:
+`tool_call` steps still carry no model token usage:
 
 ```json
-{
-  "quality": "missing",
-  "source": "claude_hook"
-}
+{ "quality": "missing", "source": "claude_hook" }
 ```
 
-If transcript or statusline parsing is added later, derived values must use `quality: "aggregate_estimate"`, not `"exact"`. Reasoning tokens must not be claimed as exact unless Claude Code exposes them directly.
+`llm_call` steps mark their usage as exact:
+
+```json
+{ "quality": "exact", "source": "claude_transcript" }
+```
+
+If the transcript is unreadable at flush time, the plugin uploads with token totals at zero rather than estimating.
 
 ## Debugging
 
@@ -121,12 +131,12 @@ npm run publish:public
 4. Create and push the release tag:
 
 ```bash
-git tag -a v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "v0.3.0"
+git push origin v0.3.0
 ```
 
 5. Optional GitHub release:
 
 ```bash
-gh release create v0.2.0 --title "v0.2.0"
+gh release create v0.3.0 --title "v0.3.0"
 ```
