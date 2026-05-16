@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { normalizeClaudeHookEvent } from "../src/normalize.js";
+import { aggregateTranscriptRecords } from "../src/transcript.js";
 
 test("normalizes Claude Code session start into an ingest session", () => {
   const result = normalizeClaudeHookEvent({
@@ -17,6 +18,7 @@ test("normalizes Claude Code session start into an ingest session", () => {
   assert.equal(result.payload.session.id, "ses_1");
   assert.equal(result.payload.session.started_at, "2026-05-15T10:00:00.000Z");
   assert.deepEqual(result.payload.interactions, []);
+  assert.equal(result.flush, false);
 });
 
 test("normalizes user prompts with stable interaction ids and missing token usage", () => {
@@ -97,12 +99,115 @@ test("normalizes failed tool and stop events", () => {
 
 test("normalizes stop and session end", () => {
   let result = normalizeClaudeHookEvent({ hook_event_name: "SessionStart", session_id: "ses_end", cwd: "/tmp/proj", timestamp: "2026-05-15T10:00:00Z" });
+  assert.equal(result.flush, false);
   result = normalizeClaudeHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "ses_end", prompt_id: "prompt-end", prompt: "Finish", timestamp: "2026-05-15T10:00:01Z" }, result.state);
+  assert.equal(result.flush, false);
   result = normalizeClaudeHookEvent({ hook_event_name: "Stop", session_id: "ses_end", timestamp: "2026-05-15T10:00:03Z" }, result.state);
+  assert.equal(result.flush, true);
   assert.equal(result.payload.interactions[0].status, "success");
   assert.equal(result.payload.session.status, "running");
 
   result = normalizeClaudeHookEvent({ hook_event_name: "SessionEnd", session_id: "ses_end", timestamp: "2026-05-15T10:00:10Z" }, result.state);
+  assert.equal(result.flush, true);
   assert.equal(result.payload.session.status, "success");
   assert.equal(result.payload.session.ended_at, "2026-05-15T10:00:10.000Z");
+});
+
+test("only flushes on Stop, StopFailure, and SessionEnd", () => {
+  const cases = [
+    { name: "SessionStart", flush: false },
+    { name: "UserPromptSubmit", flush: false },
+    { name: "PreToolUse", flush: false },
+    { name: "PostToolUse", flush: false },
+    { name: "PostToolUseFailure", flush: false },
+    { name: "Stop", flush: true },
+    { name: "StopFailure", flush: true },
+    { name: "SessionEnd", flush: true },
+  ];
+  for (const { name, flush } of cases) {
+    const result = normalizeClaudeHookEvent({ hook_event_name: name, session_id: "ses_x", timestamp: "2026-05-15T10:00:00Z" });
+    assert.equal(result.flush, flush, `${name} flush flag`);
+  }
+});
+
+test("populates session token totals and models when transcript stats are provided", () => {
+  let result = normalizeClaudeHookEvent({ hook_event_name: "SessionStart", session_id: "ses_tx", cwd: "/tmp/proj", timestamp: "2026-05-15T10:00:00Z" });
+  result = normalizeClaudeHookEvent({ hook_event_name: "UserPromptSubmit", session_id: "ses_tx", prompt_id: "p1", prompt: "Hello", timestamp: "2026-05-15T10:00:01Z" }, result.state);
+  result = normalizeClaudeHookEvent(
+    { hook_event_name: "Stop", session_id: "ses_tx", timestamp: "2026-05-15T10:00:05Z" },
+    result.state,
+    {
+      available: true,
+      input_tokens: 12,
+      output_tokens: 34,
+      cached_tokens: 100,
+      cache_creation_tokens: 50,
+      reasoning_tokens: 7,
+      llm_call_count: 2,
+      models_used: ["claude-opus-4-7"],
+    },
+  );
+
+  assert.equal(result.flush, true);
+  assert.equal(result.payload.session.input_tokens, 12);
+  assert.equal(result.payload.session.output_tokens, 34);
+  assert.equal(result.payload.session.cached_tokens, 100);
+  assert.equal(result.payload.session.cache_creation_tokens, 50);
+  assert.equal(result.payload.session.reasoning_tokens, 7);
+  assert.equal(result.payload.session.llm_call_count, 2);
+  assert.deepEqual(result.payload.session.models_used, ["claude-opus-4-7"]);
+  assert.equal(result.payload.session.token_usage_source, "claude_transcript");
+  assert.equal(result.payload.session.total_cost_usd, 0);
+
+  const interaction = result.payload.interactions[0];
+  assert.equal(interaction.input_tokens, 12);
+  assert.equal(interaction.output_tokens, 34);
+  assert.equal(interaction.llm_call_count, 2);
+});
+
+test("aggregateTranscriptRecords sums usage and dedupes by message id", () => {
+  const stats = aggregateTranscriptRecords([
+    { type: "permission-mode" },
+    { type: "user", message: { role: "user", content: "hi" } },
+    {
+      type: "assistant",
+      message: {
+        id: "msg_a",
+        model: "claude-opus-4-7",
+        usage: { input_tokens: 5, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 },
+      },
+    },
+    {
+      type: "assistant",
+      message: {
+        id: "msg_a",
+        model: "claude-opus-4-7",
+        usage: { input_tokens: 5, output_tokens: 10, cache_read_input_tokens: 20, cache_creation_input_tokens: 3 },
+      },
+    },
+    {
+      type: "assistant",
+      message: {
+        id: "msg_b",
+        model: "claude-sonnet-4-6",
+        usage: { input_tokens: 7, output_tokens: 0, cache_read_input_tokens: 0 },
+      },
+    },
+    { type: "assistant", message: { model: "claude-opus-4-7" } },
+  ]);
+
+  assert.equal(stats.available, true);
+  assert.equal(stats.input_tokens, 12);
+  assert.equal(stats.output_tokens, 10);
+  assert.equal(stats.cached_tokens, 20);
+  assert.equal(stats.cache_creation_tokens, 3);
+  assert.equal(stats.llm_call_count, 2);
+  assert.deepEqual(stats.models_used.sort(), ["claude-opus-4-7", "claude-sonnet-4-6"]);
+});
+
+test("aggregateTranscriptRecords returns empty stats when no assistant usage present", () => {
+  const stats = aggregateTranscriptRecords([{ type: "user", message: { role: "user" } }, { type: "system" }]);
+  assert.equal(stats.available, false);
+  assert.equal(stats.input_tokens, 0);
+  assert.deepEqual(stats.models_used, []);
 });

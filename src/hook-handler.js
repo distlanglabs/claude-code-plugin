@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { normalizeClaudeHookEvent } from "./normalize.js";
+import { parseTranscript } from "./transcript.js";
 import { getAuthStatus, uploadAgentDebuggerPayload } from "./distlang.js";
 import { readState, statePath, writeState } from "./state.js";
 
@@ -45,7 +46,23 @@ export async function main() {
     return;
   }
 
-  const normalized = normalizeClaudeHookEvent(event, previousState);
+  const preliminary = normalizeClaudeHookEvent(event, previousState);
+  const stateForPersist = preliminary.state;
+  if (!preliminary.flush) {
+    await writeState(stateForPersist).catch((error) => log("warn", "Failed to persist Claude Code hook state", { error: String(error) }));
+    await log("debug", "Buffered Claude Code hook event without upload", { event: preliminary.event });
+    return;
+  }
+
+  const transcriptPath = configuredValue(event?.transcript_path, transcriptPathFromState(stateForPersist, preliminary.event.session_id));
+  let transcriptStats = null;
+  try {
+    transcriptStats = await parseTranscript(transcriptPath);
+  } catch (error) {
+    await log("warn", "Failed to parse Claude Code transcript; flushing without enriched metrics", { error: String(error), transcriptPath });
+  }
+
+  const normalized = normalizeClaudeHookEvent(event, previousState, transcriptStats);
   await writeState(normalized.state).catch((error) => log("warn", "Failed to persist Claude Code hook state", { error: String(error) }));
   if (!normalized.payload) return;
 
@@ -67,7 +84,7 @@ export async function main() {
       if (!response.ok) {
         await log("warn", "Agent Debugger upload returned non-ok response", { attempt, response });
       } else {
-        await log("debug", "Agent Debugger upload succeeded", { attempt, event: normalized.event, response });
+        await log("debug", "Agent Debugger upload succeeded", { attempt, event: normalized.event, response, transcript_stats_available: transcriptStats?.available === true });
       }
       return;
     } catch (error) {
@@ -75,4 +92,10 @@ export async function main() {
       if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
+}
+
+function transcriptPathFromState(state, sessionID) {
+  const sessions = Array.isArray(state?.sessions) ? state.sessions : [];
+  const session = sessions.find((entry) => entry && entry.id === sessionID);
+  return configuredValue(session?.transcript_path, "");
 }

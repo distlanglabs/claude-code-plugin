@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { basename } from "node:path";
 
 const source = "claude-code";
+const FLUSH_EVENTS = new Set(["Stop", "StopFailure", "SessionEnd"]);
 
-export function normalizeClaudeHookEvent(event, previousState = {}) {
+export function normalizeClaudeHookEvent(event, previousState = {}, transcriptStats = null) {
   const input = event && typeof event === "object" ? event : {};
   const hookEventName = configuredValue(input.hook_event_name, configuredValue(input.hookEventName, "unknown"));
   const timestamp = normalizeDateTime(input.timestamp, new Date().toISOString());
@@ -12,10 +13,13 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
   const project = projectName(cwd);
   const state = normalizeState(previousState);
   const session = ensureSessionState(state, sessionID, timestamp, cwd, project, input.transcript_path);
+  const stats = sanitizeTranscriptStats(transcriptStats);
+  const flush = FLUSH_EVENTS.has(hookEventName);
 
   const result = {
     state,
     payload: null,
+    flush,
     event: { hook_event_name: hookEventName, session_id: sessionID, timestamp },
   };
 
@@ -25,7 +29,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
     session.cwd = cwd;
     session.project = project;
     session.transcript_path = configuredValue(input.transcript_path, session.transcript_path);
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
@@ -38,7 +42,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
     interaction.status = "running";
     interaction.hook_event_name = hookEventName;
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
@@ -57,7 +61,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
       tool_input: safeJSONValue(input.tool_input),
     });
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
@@ -80,7 +84,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
     interaction.status = failed ? "error" : interaction.status === "running" ? "success" : interaction.status;
     interaction.ended_at = timestamp;
     session.current_interaction_id = interaction.id;
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
@@ -91,7 +95,7 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
     interaction.ended_at = timestamp;
     interaction.summary = summarize(interaction.prompt, `Interaction ${interaction.index}`);
     session.status = failed ? "error" : "running";
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
@@ -104,11 +108,11 @@ export function normalizeClaudeHookEvent(event, previousState = {}) {
         interaction.ended_at = timestamp;
       }
     }
-    result.payload = buildPayload(session, timestamp);
+    result.payload = buildPayload(session, timestamp, stats);
     return result;
   }
 
-  result.payload = buildPayload(session, timestamp);
+  result.payload = buildPayload(session, timestamp, stats);
   return result;
 }
 
@@ -198,8 +202,11 @@ function ensureStepState(interaction, stepID, timestamp, toolName) {
   return step;
 }
 
-function buildPayload(session, now) {
-  const interactions = session.interactions.map((interaction) => buildInteraction(interaction, now));
+function buildPayload(session, now, stats = null) {
+  const aggregated = sanitizeTranscriptStats(stats);
+  const interactions = session.interactions.map((interaction, index, all) =>
+    buildInteraction(interaction, now, index === all.length - 1 ? aggregated : null),
+  );
   const allSteps = interactions.flatMap((interaction) => interaction.steps);
   const endedAt = session.ended_at || now;
   return {
@@ -213,25 +220,28 @@ function buildPayload(session, now) {
       status: session.status === "error" ? "error" : session.status === "success" ? "success" : "running",
       summary: sessionSummary(session, interactions),
       total_cost_usd: 0,
-      input_tokens: 0,
-      output_tokens: 0,
-      reasoning_tokens: 0,
-      cached_tokens: 0,
-      llm_call_count: 0,
+      input_tokens: aggregated.input_tokens,
+      output_tokens: aggregated.output_tokens,
+      reasoning_tokens: aggregated.reasoning_tokens,
+      cached_tokens: aggregated.cached_tokens,
+      cache_creation_tokens: aggregated.cache_creation_tokens,
+      llm_call_count: aggregated.llm_call_count,
       context_size_tokens_p50: 0,
       context_size_tokens_p95: 0,
       context_size_tokens_max: 0,
-      models_used: [],
+      models_used: aggregated.models_used,
       files_changed_count: fileEditCount(allSteps),
       retry_count: 0,
+      token_usage_source: aggregated.available ? "claude_transcript" : "missing",
     },
     interactions,
   };
 }
 
-function buildInteraction(interaction, now) {
+function buildInteraction(interaction, now, sessionStats = null) {
   const endedAt = interaction.ended_at || now;
   const steps = interaction.steps.map((step) => buildStep(step));
+  const stats = sanitizeTranscriptStats(sessionStats);
   return {
     id: interaction.id,
     index: Math.max(1, Number(interaction.index) || 1),
@@ -242,12 +252,13 @@ function buildInteraction(interaction, now) {
     duration_ms: durationMs(interaction.started_at, endedAt),
     status: interaction.status === "error" ? "error" : interaction.status === "running" ? "running" : "success",
     summary: configuredValue(sanitizeText(interaction.summary), summarize(interaction.prompt, `Interaction ${interaction.index || 1}`)),
-    llm_call_count: 0,
+    llm_call_count: stats.llm_call_count,
     cost_usd: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    reasoning_tokens: 0,
-    cached_tokens: 0,
+    input_tokens: stats.input_tokens,
+    output_tokens: stats.output_tokens,
+    reasoning_tokens: stats.reasoning_tokens,
+    cached_tokens: stats.cached_tokens,
+    cache_creation_tokens: stats.cache_creation_tokens,
     context_size_tokens_p50: 0,
     context_size_tokens_p95: 0,
     context_size_tokens_max: 0,
@@ -297,6 +308,27 @@ function stepPayload(input, extra) {
 
 export function missingTokenUsage() {
   return { quality: "missing", source: "claude_hook" };
+}
+
+function sanitizeTranscriptStats(value) {
+  const stats = value && typeof value === "object" ? value : {};
+  const models = Array.isArray(stats.models_used)
+    ? stats.models_used.filter((entry) => typeof entry === "string" && entry.trim() !== "")
+    : [];
+  return {
+    available: stats.available === true,
+    input_tokens: nonNegativeNumber(stats.input_tokens),
+    output_tokens: nonNegativeNumber(stats.output_tokens),
+    cached_tokens: nonNegativeNumber(stats.cached_tokens),
+    cache_creation_tokens: nonNegativeNumber(stats.cache_creation_tokens),
+    reasoning_tokens: nonNegativeNumber(stats.reasoning_tokens),
+    llm_call_count: nonNegativeNumber(stats.llm_call_count),
+    models_used: models,
+  };
+}
+
+function nonNegativeNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function interactionIDForPrompt(sessionID, input, prompt, timestamp) {
