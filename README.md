@@ -38,7 +38,7 @@ Once the curl installer is run, three standalone commands are available inside C
 
 - `/distlang-start` — runs the Distlang OAuth login flow if needed and enables uploads.
 - `/distlang-login` — runs the Distlang OAuth login flow (delegates to `distlang helpers login`) and enables uploads.
-- `/distlang-view [session-id]` — signs in if needed, then opens the Agent Debugger dashboard for the current Claude Code session. With no argument, it resolves the session from `CLAUDE_SESSION_ID` or the most recent session in local state, and opens `https://dash.distlang.com/agent-debugger/sessions/<id>`. Override the base with `DISTLANG_DASHBOARD_URL`.
+- `/distlang-view [session-id]` — signs in if needed, then opens the Agent Debugger dashboard for the current Claude Code session. With no argument, it resolves the session from `CLAUDE_SESSION_ID` or the most recent session in local state, and opens `https://dash.distlang.com/agent-debugger/sessions/<id>`. If no session is available yet, it opens `https://dash.distlang.com/agent-debugger`. Override the base with `DISTLANG_DASHBOARD_URL`.
 
 When installed as a native Claude Code plugin instead of through the curl installer, commands are namespaced by Claude Code, for example `/distlang-agent-debugger:distlang-view`.
 

@@ -16,6 +16,10 @@ export function sessionUrl(sessionID) {
   return `${dashboardBaseUrl()}/agent-debugger/sessions/${encodeURIComponent(id)}`;
 }
 
+export function agentDebuggerUrl() {
+  return `${dashboardBaseUrl()}/agent-debugger`;
+}
+
 export async function resolveSessionID(explicit) {
   const fromArg = configuredValue(explicit, "");
   if (fromArg) return fromArg;
@@ -64,16 +68,20 @@ async function ensureAuth() {
 export async function main() {
   const explicit = process.argv.slice(2).find((value) => !value.startsWith("--"));
   const sessionID = await resolveSessionID(explicit);
-  if (!sessionID) {
-    console.error("No Distlang session id found. Run a Claude Code session first, or pass a session id as an argument.");
-    process.exit(1);
-  }
   const auth = await ensureAuth();
   if (!auth || auth.ok !== true || auth.logged_in !== true) {
     console.error("Distlang sign-in did not complete. Re-run /distlang-view or /distlang-start to try again.");
     process.exit(1);
   }
-  const url = sessionUrl(sessionID);
+  const url = sessionID ? sessionUrl(sessionID) : agentDebuggerUrl();
   const opened = await openUrl(url);
-  console.log(JSON.stringify({ ok: true, logged_in: true, session_id: sessionID, url, opened, distlang: distlangCommandInfo() }, null, 2));
+  console.log(JSON.stringify({
+    ok: true,
+    logged_in: true,
+    session_id: sessionID || null,
+    url,
+    opened,
+    fallback: sessionID ? null : "agent_debugger_overview",
+    distlang: distlangCommandInfo(),
+  }, null, 2));
 }
