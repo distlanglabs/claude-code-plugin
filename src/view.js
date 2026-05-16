@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { distlangCommandInfo, getAuthStatus, loginWithDistlang, resolveDistlangBinary } from "./distlang.js";
 import { readState } from "./state.js";
 
 function configuredValue(value, fallback = "") {
@@ -50,6 +51,16 @@ function openUrl(url) {
   });
 }
 
+async function ensureAuth() {
+  await resolveDistlangBinary({ installIfMissing: true });
+  let auth = await getAuthStatus().catch(() => null);
+  if (!auth || auth.ok !== true || auth.logged_in !== true) {
+    await loginWithDistlang();
+    auth = await getAuthStatus().catch(() => null);
+  }
+  return auth;
+}
+
 export async function main() {
   const explicit = process.argv.slice(2).find((value) => !value.startsWith("--"));
   const sessionID = await resolveSessionID(explicit);
@@ -57,7 +68,12 @@ export async function main() {
     console.error("No Distlang session id found. Run a Claude Code session first, or pass a session id as an argument.");
     process.exit(1);
   }
+  const auth = await ensureAuth();
+  if (!auth || auth.ok !== true || auth.logged_in !== true) {
+    console.error("Distlang sign-in did not complete. Re-run /distlang-view or /distlang-start to try again.");
+    process.exit(1);
+  }
   const url = sessionUrl(sessionID);
   const opened = await openUrl(url);
-  console.log(JSON.stringify({ ok: true, session_id: sessionID, url, opened }, null, 2));
+  console.log(JSON.stringify({ ok: true, logged_in: true, session_id: sessionID, url, opened, distlang: distlangCommandInfo() }, null, 2));
 }
