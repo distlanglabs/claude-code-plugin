@@ -142,12 +142,12 @@ npm run publish:public
 4. Create and push the release tag:
 
 ```bash
-git tag -a v0.6.0 -m "v0.6.0"
-git push origin v0.6.0
+git tag -a v0.7.1 -m "v0.7.1"
+git push origin v0.7.1
 ```
 
 5. Optional GitHub release:
 
 ```bash
-gh release create v0.6.0 --title "v0.6.0"
+gh release create v0.7.1 --title "v0.7.1"
 ```
