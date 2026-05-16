@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { distlangCommandInfo, getAuthStatus, loginWithDistlang, resolveDistlangBinary } from "./distlang.js";
+import { distlangCommandInfo, fetchRecentClaudeSessions, getAuthStatus, loginWithDistlang, resolveDistlangBinary } from "./distlang.js";
 import { readState } from "./state.js";
 
 function configuredValue(value, fallback = "") {
@@ -35,6 +35,27 @@ export async function resolveSessionID(explicit) {
   return "";
 }
 
+export function newestRecentSessionID(result) {
+  const sessions = Array.isArray(result?.body?.sessions) ? result.body.sessions : [];
+  let newest = null;
+  let newestTime = 0;
+  for (const session of sessions) {
+    const id = configuredValue(session?.id, "");
+    if (!id) continue;
+    const time = Date.parse(configuredValue(session?.ended_at, session?.started_at || ""));
+    if (!newest || !Number.isFinite(time) || time >= newestTime) {
+      newest = id;
+      newestTime = Number.isFinite(time) ? time : newestTime;
+    }
+  }
+  return newest || "";
+}
+
+async function resolveRecentUploadedSessionID() {
+  const recent = await fetchRecentClaudeSessions().catch(() => null);
+  return newestRecentSessionID(recent);
+}
+
 function openerCommand() {
   if (process.platform === "darwin") return { command: "open", args: [] };
   if (process.platform === "win32") return { command: "cmd", args: ["/c", "start", ""] };
@@ -67,11 +88,14 @@ async function ensureAuth() {
 
 export async function main() {
   const explicit = process.argv.slice(2).find((value) => !value.startsWith("--"));
-  const sessionID = await resolveSessionID(explicit);
+  let sessionID = await resolveSessionID(explicit);
   const auth = await ensureAuth();
   if (!auth || auth.ok !== true || auth.logged_in !== true) {
     console.error("Distlang sign-in did not complete. Re-run /distlang-view or /distlang-start to try again.");
     process.exit(1);
+  }
+  if (!sessionID) {
+    sessionID = await resolveRecentUploadedSessionID();
   }
   const url = sessionID ? sessionUrl(sessionID) : agentDebuggerUrl();
   const opened = await openUrl(url);
